@@ -1,184 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-
-const MAP_STORAGE_KEY = "roya-blanca-map-data";
-const MAP_VIEWBOX = { width: 1200, height: 900, padding: 40 };
-
-function normalizeHeader(value) {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\uFFFD/g, "N")
-    .trim()
-    .toUpperCase();
-}
-
-function getHeaderIndex(headers, candidates, fallbackIndex) {
-  const foundIndex = headers.findIndex((header) =>
-    candidates.some((candidate) => header === candidate || header.includes(candidate))
-  );
-
-  return foundIndex >= 0 ? foundIndex : fallbackIndex;
-}
-
-function parseCsvText(text) {
-  const lines = text
-    .replace(/^\uFEFF/, "")
-    .split(/\r?\n/)
-    .filter((line) => line.trim());
-
-  if (lines.length < 2) {
-    return [];
-  }
-
-  const headers = lines[0].split(";").map(normalizeHeader);
-  const yearIndex = getHeaderIndex(headers, ["ANO"], 0);
-  const weekIndex = getHeaderIndex(headers, ["SEMANA"], 1);
-  const blockIndex = getHeaderIndex(headers, ["BLOQUE"], 2);
-  const bedIndex = getHeaderIndex(headers, ["CAMA"], 3);
-  const varietyIndex = getHeaderIndex(headers, ["VARIEDAD"], headers.length - 1);
-
-  return lines
-    .slice(1)
-    .map((line) => {
-      const values = line.split(";");
-
-      return {
-        year: Number((values[yearIndex] || "").trim()),
-        week: Number((values[weekIndex] || "").trim()),
-        block: String(values[blockIndex] || "").trim(),
-        bed: String(values[bedIndex] || "").trim(),
-        variety: String(values[varietyIndex] || "").trim()
-      };
-    })
-    .filter((row) => row.block && Number.isFinite(row.year) && Number.isFinite(row.week));
-}
-
-function sortBlocks(a, b) {
-  return Number(a) - Number(b);
-}
-
-function sortBeds(a, b) {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
-}
-
-function flattenCoordinates(geometry) {
-  if (!geometry) {
-    return [];
-  }
-
-  if (geometry.type === "Polygon") {
-    return [geometry.coordinates];
-  }
-
-  if (geometry.type === "MultiPolygon") {
-    return geometry.coordinates;
-  }
-
-  return [];
-}
-
-function buildPathFromRing(ring, transformPoint) {
-  return ring
-    .map(([x, y], index) => {
-      const point = transformPoint(x, y);
-      return `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
-    })
-    .join(" ");
-}
-
-function buildGeoBlocks(geoJson) {
-  if (!geoJson?.features?.length) {
-    return [];
-  }
-
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-
-  geoJson.features.forEach((feature) => {
-    flattenCoordinates(feature.geometry).forEach((polygon) => {
-      polygon.forEach((ring) => {
-        ring.forEach(([x, y]) => {
-          minX = Math.min(minX, x);
-          minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x);
-          maxY = Math.max(maxY, y);
-        });
-      });
-    });
-  });
-
-  const sourceWidth = Math.max(maxX - minX, 1);
-  const sourceHeight = Math.max(maxY - minY, 1);
-  const scale = Math.min(
-    (MAP_VIEWBOX.width - MAP_VIEWBOX.padding * 2) / sourceWidth,
-    (MAP_VIEWBOX.height - MAP_VIEWBOX.padding * 2) / sourceHeight
-  );
-
-  const offsetX =
-    MAP_VIEWBOX.padding +
-    (MAP_VIEWBOX.width - MAP_VIEWBOX.padding * 2 - sourceWidth * scale) / 2;
-  const offsetY =
-    MAP_VIEWBOX.padding +
-    (MAP_VIEWBOX.height - MAP_VIEWBOX.padding * 2 - sourceHeight * scale) / 2;
-
-  const transformPoint = (x, y) => ({
-    x: offsetX + (x - minX) * scale,
-    y: MAP_VIEWBOX.height - (offsetY + (y - minY) * scale)
-  });
-
-  const groupedBlocks = new Map();
-
-  geoJson.features.forEach((feature) => {
-    const blockId = String(feature.properties?.FID ?? "").trim();
-
-    if (!blockId) {
-      return;
-    }
-
-    const current = groupedBlocks.get(blockId) || {
-      id: blockId,
-      paths: [],
-      points: []
-    };
-
-    flattenCoordinates(feature.geometry).forEach((polygon) => {
-      polygon.forEach((ring, ringIndex) => {
-        if (!ring.length) {
-          return;
-        }
-
-        if (ringIndex === 0) {
-          current.paths.push(`${buildPathFromRing(ring, transformPoint)} Z`);
-          ring.forEach(([x, y]) => {
-            current.points.push(transformPoint(x, y));
-          });
-        }
-      });
-    });
-
-    groupedBlocks.set(blockId, current);
-  });
-
-  return [...groupedBlocks.values()]
-    .map((block) => {
-      const center = block.points.reduce(
-        (accumulator, point) => ({
-          x: accumulator.x + point.x / block.points.length,
-          y: accumulator.y + point.y / block.points.length
-        }),
-        { x: 0, y: 0 }
-      );
-
-      return {
-        id: block.id,
-        path: block.paths.join(" "),
-        center
-      };
-    })
-    .sort((a, b) => sortBlocks(a.id, b.id));
-}
+import { buildGeoBlocks, MAP_VIEWBOX, sortBeds } from "./lib/geo";
+import { clearLocalCsv, loadReportRows, saveLocalCsv } from "./lib/reportData";
+import { hasSupabaseConfig } from "./lib/supabase";
 
 export default function App() {
   const [rows, setRows] = useState([]);
@@ -190,40 +13,27 @@ export default function App() {
   const [weekToInput, setWeekToInput] = useState("52");
   const [selectedBlock, setSelectedBlock] = useState("1");
   const [activeTab, setActiveTab] = useState("mapa");
-  const [sourceLabel, setSourceLabel] = useState("Cargando CSV base...");
+  const [sourceLabel, setSourceLabel] = useState("Cargando base...");
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
-    const storedText = localStorage.getItem(MAP_STORAGE_KEY);
-
-    if (storedText) {
-      const parsedRows = parseCsvText(storedText);
-      setRows(parsedRows);
-      setSourceLabel("Base cargada desde la ultima version subida");
-      return;
-    }
-
-    fetch("/roya-blanca.csv")
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("No se pudo cargar el CSV inicial");
-        }
-
-        return response.text();
-      })
-      .then((text) => {
-        localStorage.setItem(MAP_STORAGE_KEY, text);
-        setRows(parseCsvText(text));
-        setSourceLabel("Base inicial: roya-blanca.csv");
+    loadReportRows()
+      .then(({ rows: loadedRows, sourceLabel: nextLabel }) => {
+        setRows(loadedRows);
+        setSourceLabel(nextLabel);
       })
       .catch(() => {
-        setLoadError("No se pudo cargar el CSV inicial. Sube el archivo manualmente.");
+        setLoadError(
+          hasSupabaseConfig
+            ? "No se pudo cargar la base remota de Supabase."
+            : "No se pudo cargar el CSV inicial. Sube el archivo manualmente."
+        );
         setSourceLabel("Sin base cargada");
       });
   }, []);
 
   useEffect(() => {
-    fetch("/bloques.geojson")
+    fetch(`${import.meta.env.BASE_URL}bloques.geojson`)
       .then((response) => {
         if (!response.ok) {
           throw new Error("No se pudo cargar el GeoJSON de bloques");
@@ -332,9 +142,8 @@ export default function App() {
     }
 
     file.text().then((text) => {
-      const parsedRows = parseCsvText(text);
+      const parsedRows = saveLocalCsv(text);
       setRows(parsedRows);
-      localStorage.setItem(MAP_STORAGE_KEY, text);
       setSourceLabel(`Base cargada: ${file.name}`);
       setLoadError("");
     });
@@ -364,7 +173,7 @@ export default function App() {
   }
 
   function clearStoredData() {
-    localStorage.removeItem(MAP_STORAGE_KEY);
+    clearLocalCsv();
     window.location.reload();
   }
 
@@ -403,10 +212,12 @@ export default function App() {
             <span>{sourceLabel}</span>
           </div>
 
-          <label>
-            Subir CSV
-            <input type="file" accept=".csv,text/csv" onChange={handleCsvUpload} />
-          </label>
+          {!hasSupabaseConfig ? (
+            <label>
+              Subir CSV
+              <input type="file" accept=".csv,text/csv" onChange={handleCsvUpload} />
+            </label>
+          ) : null}
 
           <div className="grid-two">
             <label>
@@ -479,9 +290,11 @@ export default function App() {
 
           {loadError ? <p className="error-text">{loadError}</p> : null}
 
-          <button type="button" className="ghost-button" onClick={clearStoredData}>
-            Restaurar CSV inicial
-          </button>
+          {!hasSupabaseConfig ? (
+            <button type="button" className="ghost-button" onClick={clearStoredData}>
+              Restaurar CSV inicial
+            </button>
+          ) : null}
         </div>
 
         <div className="panel">
