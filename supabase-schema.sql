@@ -15,8 +15,11 @@ create index if not exists rb_reports_block_idx
 
 alter table public.rb_reports enable row level security;
 
-create policy "Allow public read access to rb_reports"
+drop policy if exists "Allow public read access to rb_reports" on public.rb_reports;
+drop policy if exists "Allow authenticated read access to rb_reports" on public.rb_reports;
+
+create policy "Allow authenticated read access to rb_reports"
 on public.rb_reports
 for select
-to anon, authenticated
+to authenticated
 using (true);

@@ -1,7 +1,61 @@
 import { useEffect, useMemo, useState } from "react";
 import { buildGeoBlocks, MAP_VIEWBOX, sortBeds } from "./lib/geo";
 import { clearLocalCsv, loadReportRows, saveLocalCsv } from "./lib/reportData";
-import { hasSupabaseConfig } from "./lib/supabase";
+import { hasSupabaseConfig, supabase } from "./lib/supabase";
+
+const initialAuthForm = {
+  email: "",
+  password: ""
+};
+
+function AuthScreen({ authForm, authError, authLoading, onChange, onSubmit }) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-card panel">
+        <p className="eyebrow">Flores el Trigal Olas</p>
+        <h1>Ingreso al mapa de reporte RB</h1>
+        <p className="lead">
+          Inicia sesión con tu correo y contraseña para consultar la información
+          de roya blanca.
+        </p>
+
+        <form className="auth-form" onSubmit={onSubmit}>
+          <label>
+            Correo
+            <input
+              name="email"
+              type="email"
+              value={authForm.email}
+              onChange={onChange}
+              placeholder="nombre@empresa.com"
+              autoComplete="email"
+              required
+            />
+          </label>
+
+          <label>
+            Contraseña
+            <input
+              name="password"
+              type="password"
+              value={authForm.password}
+              onChange={onChange}
+              placeholder="Tu contraseña"
+              autoComplete="current-password"
+              required
+            />
+          </label>
+
+          {authError ? <p className="error-text">{authError}</p> : null}
+
+          <button type="submit" className="primary-button" disabled={authLoading}>
+            {authLoading ? "Ingresando..." : "Ingresar"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
 
 export default function App() {
   const [rows, setRows] = useState([]);
@@ -15,8 +69,39 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("mapa");
   const [sourceLabel, setSourceLabel] = useState("Cargando base...");
   const [loadError, setLoadError] = useState("");
+  const [session, setSession] = useState(null);
+  const [authResolved, setAuthResolved] = useState(!hasSupabaseConfig);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authForm, setAuthForm] = useState(initialAuthForm);
 
   useEffect(() => {
+    if (!hasSupabaseConfig || !supabase) {
+      return undefined;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session ?? null);
+      setAuthResolved(true);
+    });
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession ?? null);
+      setAuthResolved(true);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (hasSupabaseConfig && !session) {
+      setRows([]);
+      setSourceLabel("Inicia sesión para cargar la base");
+      return;
+    }
+
     loadReportRows()
       .then(({ rows: loadedRows, sourceLabel: nextLabel }) => {
         setRows(loadedRows);
@@ -30,7 +115,7 @@ export default function App() {
         );
         setSourceLabel("Sin base cargada");
       });
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     fetch(`${import.meta.env.BASE_URL}bloques.geojson`)
@@ -158,6 +243,68 @@ export default function App() {
     window.location.reload();
   }
 
+  function handleAuthChange(event) {
+    const { name, value } = event.target;
+    setAuthForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function handleAuthSubmit(event) {
+    event.preventDefault();
+
+    if (!supabase) {
+      return;
+    }
+
+    setAuthLoading(true);
+    setAuthError("");
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: authForm.email,
+      password: authForm.password
+    });
+
+    if (error) {
+      setAuthError("No se pudo iniciar sesión. Verifica tus credenciales.");
+      setAuthLoading(false);
+      return;
+    }
+
+    setAuthForm(initialAuthForm);
+    setAuthLoading(false);
+  }
+
+  async function handleSignOut() {
+    if (!supabase) {
+      return;
+    }
+
+    await supabase.auth.signOut();
+  }
+
+  if (hasSupabaseConfig && !authResolved) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card panel">
+          <p className="eyebrow">Flores el Trigal Olas</p>
+          <h1>Mapa de reporte RB</h1>
+          <p className="lead">Verificando sesión...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (hasSupabaseConfig && !session) {
+    return (
+      <AuthScreen
+        authForm={authForm}
+        authError={authError}
+        authLoading={authLoading}
+        onChange={handleAuthChange}
+        onSubmit={handleAuthSubmit}
+      />
+    );
+  }
+
   return (
     <main className="dashboard-shell">
       <section className="hero-banner panel">
@@ -184,6 +331,15 @@ export default function App() {
             <strong>{stats.blocksWithoutReports}</strong>
           </div>
         </div>
+
+        {hasSupabaseConfig && session?.user ? (
+          <div className="session-bar">
+            <small>{session.user.email}</small>
+            <button type="button" className="ghost-button" onClick={handleSignOut}>
+              Cerrar sesión
+            </button>
+          </div>
+        ) : null}
       </section>
 
       <section className="control-grid">
@@ -343,10 +499,6 @@ export default function App() {
                 <strong>{weekFrom}</strong> y la <strong>{weekTo}</strong> del año{" "}
                 <strong>{selectedYear || "-"}</strong>.
               </div>
-              <div className="mobile-hint">
-                En celular puedes deslizar el mapa horizontalmente para ver todo
-                el lote.
-              </div>
             </section>
           ) : (
             <section className="detail-view">
@@ -369,32 +521,30 @@ export default function App() {
                   </p>
                 </article>
               ) : (
-                <>
-                  <div className="table-wrapper">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Año</th>
-                          <th>Semana</th>
-                          <th>Bloque</th>
-                          <th>Cama</th>
-                          <th>Variedad</th>
+                <div className="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Año</th>
+                        <th>Semana</th>
+                        <th>Bloque</th>
+                        <th>Cama</th>
+                        <th>Variedad</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedBlockRows.map((row, index) => (
+                        <tr key={`${row.block}-${row.bed}-${row.week}-${index}`}>
+                          <td>{row.year}</td>
+                          <td>{row.week}</td>
+                          <td>{row.block}</td>
+                          <td>{row.bed}</td>
+                          <td>{row.variety || "-"}</td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {selectedBlockRows.map((row, index) => (
-                          <tr key={`${row.block}-${row.bed}-${row.week}-${index}`}>
-                            <td>{row.year}</td>
-                            <td>{row.week}</td>
-                            <td>{row.block}</td>
-                            <td>{row.bed}</td>
-                            <td>{row.variety || "-"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </section>
           )}

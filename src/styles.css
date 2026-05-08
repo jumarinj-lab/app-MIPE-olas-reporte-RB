@@ -34,6 +34,30 @@ button {
   padding: 28px 18px 48px;
 }
 
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-card {
+  width: min(100%, 460px);
+  padding: 28px;
+}
+
+.auth-card h1 {
+  margin: 0 0 8px;
+  font-size: clamp(2rem, 4vw, 2.8rem);
+  line-height: 1;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+}
+
 .panel {
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid rgba(20, 37, 61, 0.08);
@@ -148,6 +172,13 @@ button {
   font-weight: 600;
 }
 
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-weight: 600;
+}
+
 .grid-two {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -207,17 +238,33 @@ select:focus {
 }
 
 .ghost-button,
-.tab {
+.tab,
+.primary-button {
   border: 0;
-  background: #eaf1fb;
-  color: #1f4370;
   border-radius: 14px;
   padding: 12px 16px;
+}
+
+.ghost-button,
+.tab {
+  background: #eaf1fb;
+  color: #1f4370;
 }
 
 .ghost-button:hover,
 .tab:hover {
   background: #dbe7f8;
+}
+
+.primary-button {
+  background: #26619c;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.primary-button:disabled {
+  opacity: 0.7;
+  cursor: wait;
 }
 
 .tabs {
@@ -347,6 +394,14 @@ th {
 .error-text {
   color: #a62926;
   margin-top: 0;
+}
+
+.session-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  grid-column: 1 / -1;
 }
 
 @media (max-width: 1100px) {
