@@ -104,25 +104,6 @@ export default function App() {
       .sort((a, b) => a.week - b.week || sortBeds(a.bed, b.bed));
   }, [filteredRows, selectedBlock]);
 
-  const bedSummary = useMemo(() => {
-    const grouped = new Map();
-
-    selectedBlockRows.forEach((row) => {
-      const current = grouped.get(row.bed) || new Set();
-      if (row.variety) {
-        current.add(row.variety);
-      }
-      grouped.set(row.bed, current);
-    });
-
-    return [...grouped.entries()]
-      .sort((a, b) => sortBeds(a[0], b[0]))
-      .map(([bed, varieties]) => ({
-        bed,
-        varieties: [...varieties].sort((a, b) => a.localeCompare(b))
-      }));
-  }, [selectedBlockRows]);
-
   const stats = useMemo(() => {
     const allBlocks = geoBlocks.map((block) => String(block.id));
     const reported = allBlocks.filter((blockId) => reportedBlocks.has(blockId));
@@ -209,7 +190,7 @@ export default function App() {
         <div className="panel filters-panel">
           <div className="panel-heading">
             <h2>Filtros</h2>
-            <span>{sourceLabel}</span>
+            <span className="source-pill">{sourceLabel}</span>
           </div>
 
           {!hasSupabaseConfig ? (
@@ -362,6 +343,10 @@ export default function App() {
                 <strong>{weekFrom}</strong> y la <strong>{weekTo}</strong> del año{" "}
                 <strong>{selectedYear || "-"}</strong>.
               </div>
+              <div className="mobile-hint">
+                En celular puedes deslizar el mapa horizontalmente para ver todo
+                el lote.
+              </div>
             </section>
           ) : (
             <section className="detail-view">
@@ -385,15 +370,6 @@ export default function App() {
                 </article>
               ) : (
                 <>
-                  <div className="summary-grid">
-                    {bedSummary.map((entry) => (
-                      <article key={entry.bed} className="summary-card">
-                        <h3>Cama {entry.bed}</h3>
-                        <p>{entry.varieties.join(", ") || "Sin variedad registrada"}</p>
-                      </article>
-                    ))}
-                  </div>
-
                   <div className="table-wrapper">
                     <table>
                       <thead>
