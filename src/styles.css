@@ -396,12 +396,23 @@ th {
   margin-top: 0;
 }
 
+.success-text {
+  color: #1d6b47;
+  margin-top: 0;
+}
+
 .session-bar {
   display: flex;
   justify-content: flex-end;
   align-items: center;
   gap: 10px;
   grid-column: 1 / -1;
+}
+
+.helper-text {
+  color: #597286;
+  font-size: 0.85rem;
+  font-weight: 400;
 }
 
 @media (max-width: 1100px) {

@@ -5,6 +5,7 @@ const LOCAL_STORAGE_KEY = "roya-blanca-map-data";
 const TABLE_NAME = "rb_reports";
 const CSV_URL = `${import.meta.env.BASE_URL}roya-blanca.csv`;
 const PAGE_SIZE = 1000;
+const MAX_SUPABASE_TABLE_BYTES = 450000000;
 
 function mapSupabaseRow(row) {
   return {
@@ -80,4 +81,27 @@ export function saveLocalCsv(text) {
 
 export function clearLocalCsv() {
   localStorage.removeItem(LOCAL_STORAGE_KEY);
+}
+
+export async function syncSupabaseRowsFromCsv(text) {
+  if (!hasSupabaseConfig || !supabase) {
+    throw new Error("Supabase no está configurado.");
+  }
+
+  const parsedRows = parseCsvText(text);
+  const { data, error } = await supabase.rpc("sync_rb_reports", {
+    payload: parsedRows,
+    max_bytes: MAX_SUPABASE_TABLE_BYTES
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return {
+    rows: (await loadReportRows()).rows,
+    insertedCount: data?.inserted_count ?? 0,
+    deletedCount: data?.deleted_count ?? 0,
+    currentSizeBytes: data?.current_size_bytes ?? null
+  };
 }

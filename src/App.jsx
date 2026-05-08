@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { buildGeoBlocks, MAP_VIEWBOX, sortBeds } from "./lib/geo";
-import { clearLocalCsv, loadReportRows, saveLocalCsv } from "./lib/reportData";
+import {
+  clearLocalCsv,
+  loadReportRows,
+  saveLocalCsv
+} from "./lib/reportData";
+import { syncSupabaseRowsFromCsv } from "./lib/reportData";
 import { hasSupabaseConfig, supabase } from "./lib/supabase";
+
+const ADMIN_EMAIL = "jefemipe@trigal.com";
 
 const initialAuthForm = {
   email: "",
@@ -74,6 +81,8 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authForm, setAuthForm] = useState(initialAuthForm);
+  const [uploadingReports, setUploadingReports] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState("");
 
   useEffect(() => {
     if (!hasSupabaseConfig || !supabase) {
@@ -139,6 +148,8 @@ export default function App() {
   const years = useMemo(() => {
     return [...new Set(rows.map((row) => row.year))].sort((a, b) => a - b);
   }, [rows]);
+
+  const isAdmin = session?.user?.email?.toLowerCase() === ADMIN_EMAIL;
 
   useEffect(() => {
     if (!years.length) {
@@ -213,6 +224,37 @@ export default function App() {
       setSourceLabel(`Base cargada: ${file.name}`);
       setLoadError("");
     });
+  }
+
+  async function handleSupabaseCsvUpload(event) {
+    const file = event.target.files?.[0];
+
+    if (!file || !isAdmin) {
+      return;
+    }
+
+    setUploadingReports(true);
+    setUploadMessage("");
+    setLoadError("");
+
+    try {
+      const text = await file.text();
+      const {
+        rows: syncedRows,
+        insertedCount,
+        deletedCount
+      } = await syncSupabaseRowsFromCsv(text);
+      setRows(syncedRows);
+      setSourceLabel(`Base remota actualizada: ${file.name}`);
+      setUploadMessage(
+        `Sincronización completa. Nuevos: ${insertedCount}. Eliminados por limpieza: ${deletedCount}.`
+      );
+    } catch (_error) {
+      setLoadError("No se pudo actualizar la base remota con el CSV.");
+    } finally {
+      setUploadingReports(false);
+      event.target.value = "";
+    }
   }
 
   function handleBlockSelect(blockId) {
@@ -355,6 +397,24 @@ export default function App() {
               <input type="file" accept=".csv,text/csv" onChange={handleCsvUpload} />
             </label>
           ) : null}
+
+          {hasSupabaseConfig && isAdmin ? (
+            <label>
+              Actualizar base remota
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={handleSupabaseCsvUpload}
+                disabled={uploadingReports}
+              />
+              <small className="helper-text">
+                Inserta solo registros nuevos. Si la base supera el límite
+                configurado, elimina automáticamente los más viejos.
+              </small>
+            </label>
+          ) : null}
+
+          {uploadMessage ? <p className="success-text">{uploadMessage}</p> : null}
 
           <div className="grid-two">
             <label>

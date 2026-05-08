@@ -25,7 +25,8 @@ export function parseCsvText(text) {
     return [];
   }
 
-  const headers = lines[0].split(";").map(normalizeHeader);
+  const delimiter = lines[0].includes(";") ? ";" : ",";
+  const headers = lines[0].split(delimiter).map(normalizeHeader);
   const yearIndex = getHeaderIndex(headers, ["ANO"], 0);
   const weekIndex = getHeaderIndex(headers, ["SEMANA"], 1);
   const blockIndex = getHeaderIndex(headers, ["BLOQUE"], 2);
@@ -35,7 +36,7 @@ export function parseCsvText(text) {
   return lines
     .slice(1)
     .map((line) => {
-      const values = line.split(";");
+      const values = line.split(delimiter);
 
       return {
         year: Number((values[yearIndex] || "").trim()),

@@ -7,19 +7,142 @@ create table if not exists public.rb_reports (
   variety text
 );
 
+update public.rb_reports
+set
+  block = trim(block),
+  bed = trim(coalesce(bed, '')),
+  variety = trim(coalesce(variety, ''));
+
+alter table public.rb_reports
+  alter column bed set default '',
+  alter column variety set default '';
+
+update public.rb_reports
+set
+  bed = '',
+  variety = coalesce(variety, '')
+where bed is null;
+
+update public.rb_reports
+set
+  variety = ''
+where variety is null;
+
+alter table public.rb_reports
+  alter column bed set not null,
+  alter column variety set not null;
+
+delete from public.rb_reports a
+using public.rb_reports b
+where a.id > b.id
+  and a.year = b.year
+  and a.week = b.week
+  and a.block = b.block
+  and a.bed = b.bed
+  and a.variety = b.variety;
+
 create index if not exists rb_reports_year_week_idx
   on public.rb_reports (year, week);
 
 create index if not exists rb_reports_block_idx
   on public.rb_reports (block);
 
+drop index if exists rb_reports_unique_entry_idx;
+
+create unique index if not exists rb_reports_unique_entry_idx
+  on public.rb_reports (year, week, block, bed, variety);
+
 alter table public.rb_reports enable row level security;
 
 drop policy if exists "Allow public read access to rb_reports" on public.rb_reports;
 drop policy if exists "Allow authenticated read access to rb_reports" on public.rb_reports;
+drop policy if exists "Allow admin insert to rb_reports" on public.rb_reports;
+drop policy if exists "Allow admin delete to rb_reports" on public.rb_reports;
+drop function if exists public.sync_rb_reports(jsonb, bigint);
 
 create policy "Allow authenticated read access to rb_reports"
 on public.rb_reports
 for select
 to authenticated
 using (true);
+
+create policy "Allow admin insert to rb_reports"
+on public.rb_reports
+for insert
+to authenticated
+with check ((auth.jwt() ->> 'email') = 'jefemipe@trigal.com');
+
+create policy "Allow admin delete to rb_reports"
+on public.rb_reports
+for delete
+to authenticated
+using ((auth.jwt() ->> 'email') = 'jefemipe@trigal.com');
+
+create or replace function public.sync_rb_reports(
+  payload jsonb,
+  max_bytes bigint default 450000000
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  inserted_count integer := 0;
+  deleted_count integer := 0;
+begin
+  with normalized_rows as (
+    select distinct
+      row_data.year::integer as year,
+      row_data.week::integer as week,
+      trim(row_data.block) as block,
+      trim(coalesce(row_data.bed, '')) as bed,
+      trim(coalesce(row_data.variety, '')) as variety
+    from jsonb_to_recordset(payload) as row_data(
+      year text,
+      week text,
+      block text,
+      bed text,
+      variety text
+    )
+    where coalesce(trim(row_data.block), '') <> ''
+      and coalesce(trim(row_data.year), '') <> ''
+      and coalesce(trim(row_data.week), '') <> ''
+  ),
+  inserted_rows as (
+    insert into public.rb_reports (year, week, block, bed, variety)
+    select year, week, block, bed, variety
+    from normalized_rows
+    on conflict (year, week, block, bed, variety) do nothing
+    returning id
+  )
+  select count(*) into inserted_count
+  from inserted_rows;
+
+  if inserted_count > 0 and pg_total_relation_size('public.rb_reports') > max_bytes then
+    with oldest_rows as (
+      select id
+      from public.rb_reports
+      order by year asc, week asc, id asc
+      limit inserted_count
+    ),
+    deleted_rows as (
+      delete from public.rb_reports
+      where id in (select id from oldest_rows)
+      returning id
+    )
+    select count(*) into deleted_count
+    from deleted_rows;
+  end if;
+
+  return jsonb_build_object(
+    'inserted_count', inserted_count,
+    'deleted_count', deleted_count,
+    'current_size_bytes', pg_total_relation_size('public.rb_reports')
+  );
+end;
+$$;
+
+revoke execute on function public.sync_rb_reports(jsonb, bigint) from public;
+revoke execute on function public.sync_rb_reports(jsonb, bigint) from anon;
+grant execute on function public.sync_rb_reports(jsonb, bigint) to authenticated;
