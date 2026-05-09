@@ -1,11 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { utils, writeFile } from "xlsx";
 import { buildGeoBlocks, MAP_VIEWBOX, sortBeds } from "./lib/geo";
-import {
-  clearLocalCsv,
-  loadReportRows,
-  saveLocalCsv
-} from "./lib/reportData";
-import { syncSupabaseRowsFromCsv } from "./lib/reportData";
+import { clearLocalCsv, loadReportRows, saveLocalCsv, syncSupabaseRowsFromCsv } from "./lib/reportData";
 import { hasSupabaseConfig, supabase } from "./lib/supabase";
 
 const ADMIN_EMAIL = "jefemipe@trigal.com";
@@ -64,6 +60,30 @@ function AuthScreen({ authForm, authError, authLoading, onChange, onSubmit }) {
   );
 }
 
+function getSeverityClass(reportCount) {
+  if (reportCount === 1) {
+    return "severity-once";
+  }
+
+  if (reportCount >= 2 && reportCount <= 3) {
+    return "severity-low";
+  }
+
+  if (reportCount >= 4 && reportCount <= 6) {
+    return "severity-medium";
+  }
+
+  if (reportCount >= 7 && reportCount <= 10) {
+    return "severity-high";
+  }
+
+  if (reportCount > 10) {
+    return "severity-overflow";
+  }
+
+  return "";
+}
+
 export default function App() {
   const [rows, setRows] = useState([]);
   const [geoBlocks, setGeoBlocks] = useState([]);
@@ -83,6 +103,8 @@ export default function App() {
   const [authForm, setAuthForm] = useState(initialAuthForm);
   const [uploadingReports, setUploadingReports] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
+  const [expandedRowKey, setExpandedRowKey] = useState(null);
+  const [selectedBeds, setSelectedBeds] = useState({});
 
   useEffect(() => {
     if (!hasSupabaseConfig || !supabase) {
@@ -200,6 +222,72 @@ export default function App() {
       .sort((a, b) => a.week - b.week || sortBeds(a.bed, b.bed));
   }, [filteredRows, selectedBlock]);
 
+  const historicalRowsByBed = useMemo(() => {
+    const grouped = new Map();
+
+    rows
+      .filter((row) => String(row.block) === String(selectedBlock))
+      .forEach((row) => {
+        const current = grouped.get(row.bed) || [];
+        current.push(row);
+        grouped.set(row.bed, current);
+      });
+
+    grouped.forEach((bedRows, bed) => {
+      grouped.set(
+        bed,
+        bedRows.sort((a, b) => a.year - b.year || a.week - b.week || sortBeds(a.bed, b.bed))
+      );
+    });
+
+    return grouped;
+  }, [rows, selectedBlock]);
+
+  const reportCountByBed = useMemo(() => {
+    const counts = new Map();
+    historicalRowsByBed.forEach((bedRows, bed) => {
+      counts.set(bed, bedRows.length);
+    });
+    return counts;
+  }, [historicalRowsByBed]);
+
+  const historyTableByBed = useMemo(() => {
+    const historyMap = new Map();
+
+    historicalRowsByBed.forEach((bedRows, bed) => {
+      const rowsByYear = new Map();
+
+      bedRows.forEach((row) => {
+        const current = rowsByYear.get(row.year) || {
+          year: row.year,
+          weeks: new Set(),
+          varieties: new Set()
+        };
+
+        current.weeks.add(row.week);
+
+        if (row.variety) {
+          current.varieties.add(row.variety);
+        }
+
+        rowsByYear.set(row.year, current);
+      });
+
+      historyMap.set(
+        bed,
+        [...rowsByYear.values()]
+          .sort((a, b) => a.year - b.year)
+          .map((entry) => ({
+            year: entry.year,
+            weeks: [...entry.weeks].sort((a, b) => a - b),
+            varieties: [...entry.varieties].sort((a, b) => a.localeCompare(b))
+          }))
+      );
+    });
+
+    return historyMap;
+  }, [historicalRowsByBed]);
+
   const stats = useMemo(() => {
     const allBlocks = geoBlocks.map((block) => String(block.id));
     const reported = allBlocks.filter((blockId) => reportedBlocks.has(blockId));
@@ -210,6 +298,16 @@ export default function App() {
       blocksWithoutReports: allBlocks.length - reported.length
     };
   }, [filteredRows, geoBlocks, reportedBlocks]);
+
+  const selectedBedEntries = useMemo(() => {
+    return Object.entries(selectedBeds)
+      .filter(([, value]) => value)
+      .map(([key]) => {
+        const [block, bed] = key.split("__");
+        return { block, bed };
+      })
+      .sort((a, b) => Number(a.block) - Number(b.block) || sortBeds(a.bed, b.bed));
+  }, [selectedBeds]);
 
   function handleCsvUpload(event) {
     const file = event.target.files?.[0];
@@ -239,11 +337,7 @@ export default function App() {
 
     try {
       const text = await file.text();
-      const {
-        rows: syncedRows,
-        insertedCount,
-        deletedCount
-      } = await syncSupabaseRowsFromCsv(text);
+      const { rows: syncedRows, insertedCount, deletedCount } = await syncSupabaseRowsFromCsv(text);
       setRows(syncedRows);
       setSourceLabel(`Base remota actualizada: ${file.name}`);
       setUploadMessage(
@@ -259,6 +353,7 @@ export default function App() {
 
   function handleBlockSelect(blockId) {
     setSelectedBlock(String(blockId));
+    setExpandedRowKey(null);
     setActiveTab("detalle");
   }
 
@@ -323,6 +418,43 @@ export default function App() {
     await supabase.auth.signOut();
   }
 
+  function toggleRowDetail(rowKey) {
+    setExpandedRowKey((current) => (current === rowKey ? null : rowKey));
+  }
+
+  function getBedSelectionKey(block, bed) {
+    return `${block}__${bed}`;
+  }
+
+  function toggleBedSelection(block, bed) {
+    const selectionKey = getBedSelectionKey(block, bed);
+    setSelectedBeds((current) => ({
+      ...current,
+      [selectionKey]: !current[selectionKey]
+    }));
+  }
+
+  function exportSelectedBeds() {
+    if (!selectedBedEntries.length) {
+      return;
+    }
+
+    const workbook = utils.book_new();
+    const worksheet = utils.json_to_sheet(
+      selectedBedEntries.map((entry) => ({
+        BLOQUE: entry.block,
+        CAMA: entry.bed
+      }))
+    );
+
+    utils.book_append_sheet(workbook, worksheet, "Camas seleccionadas");
+    writeFile(workbook, "camas-seleccionadas-rb.xlsx");
+  }
+
+  function clearSelectedBeds() {
+    setSelectedBeds({});
+  }
+
   if (hasSupabaseConfig && !authResolved) {
     return (
       <main className="auth-shell">
@@ -354,8 +486,7 @@ export default function App() {
           <p className="eyebrow">Flores el Trigal Olas</p>
           <h1>Mapa de reporte RB</h1>
           <p className="lead">
-            El bloque se marca en rojo si se reportó RB en el rango de tiempo
-            seleccionado.
+            El bloque se marca en rojo si se reportó RB en el rango de tiempo seleccionado.
           </p>
         </div>
 
@@ -408,8 +539,8 @@ export default function App() {
                 disabled={uploadingReports}
               />
               <small className="helper-text">
-                Inserta solo registros nuevos. Si la base supera el límite
-                configurado, elimina automáticamente los más viejos.
+                Inserta solo registros nuevos. Si la base supera el límite configurado,
+                elimina automáticamente los más viejos.
               </small>
             </label>
           ) : null}
@@ -487,6 +618,31 @@ export default function App() {
 
           {loadError ? <p className="error-text">{loadError}</p> : null}
 
+          <div className="selection-summary">
+            <div>
+              <span className="selection-label">Camas totales seleccionadas</span>
+              <strong>{selectedBedEntries.length}</strong>
+            </div>
+            <div className="selection-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={clearSelectedBeds}
+                disabled={!selectedBedEntries.length}
+              >
+                Limpiar selección
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={exportSelectedBeds}
+                disabled={!selectedBedEntries.length}
+              >
+                Descargar Excel
+              </button>
+            </div>
+          </div>
+
           {!hasSupabaseConfig ? (
             <button type="button" className="ghost-button" onClick={clearStoredData}>
               Restaurar CSV inicial
@@ -554,10 +710,9 @@ export default function App() {
               </div>
 
               <div className="map-caption">
-                Haz clic en cualquier bloque para abrir su detalle. El color rojo
-                indica que el bloque sí aparece en la base entre la semana{" "}
-                <strong>{weekFrom}</strong> y la <strong>{weekTo}</strong> del año{" "}
-                <strong>{selectedYear || "-"}</strong>.
+                Haz clic en cualquier bloque para abrir su detalle. El color rojo indica que
+                el bloque sí aparece en la base entre la semana <strong>{weekFrom}</strong> y la{" "}
+                <strong>{weekTo}</strong> del año <strong>{selectedYear || "-"}</strong>.
               </div>
             </section>
           ) : (
@@ -576,8 +731,8 @@ export default function App() {
                 <article className="empty-state">
                   <h3>Sin reportes para este bloque</h3>
                   <p>
-                    El bloque {selectedBlock} no aparece en la base para el año y
-                    semanas seleccionadas.
+                    El bloque {selectedBlock} no aparece en la base para el año y semanas
+                    seleccionadas.
                   </p>
                 </article>
               ) : (
@@ -590,18 +745,82 @@ export default function App() {
                         <th>Bloque</th>
                         <th>Cama</th>
                         <th>Variedad</th>
+                        <th>Detalle</th>
+                        <th>Seleccionar</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedBlockRows.map((row, index) => (
-                        <tr key={`${row.block}-${row.bed}-${row.week}-${index}`}>
-                          <td>{row.year}</td>
-                          <td>{row.week}</td>
-                          <td>{row.block}</td>
-                          <td>{row.bed}</td>
-                          <td>{row.variety || "-"}</td>
-                        </tr>
-                      ))}
+                      {selectedBlockRows.map((row, index) => {
+                        const rowKey = `${row.year}-${row.week}-${row.block}-${row.bed}-${row.variety}-${index}`;
+                        const reportCount = reportCountByBed.get(row.bed) || 0;
+                        const historyRows = historyTableByBed.get(row.bed) || [];
+                        const isExpanded = expandedRowKey === rowKey;
+                        const selectionKey = getBedSelectionKey(row.block, row.bed);
+                        const isSelectedBed = Boolean(selectedBeds[selectionKey]);
+
+                        return (
+                          <Fragment key={rowKey}>
+                            <tr className={getSeverityClass(reportCount)}>
+                              <td>{row.year}</td>
+                              <td>{row.week}</td>
+                              <td>{row.block}</td>
+                              <td>
+                                {row.bed}
+                                <small className="bed-count">{reportCount} reportes</small>
+                              </td>
+                              <td>{row.variety || "-"}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="detail-toggle"
+                                  onClick={() => toggleRowDetail(rowKey)}
+                                >
+                                  {isExpanded ? "Ocultar detalle" : "Ver detalle"}
+                                </button>
+                              </td>
+                              <td>
+                                <label className="select-bed-toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelectedBed}
+                                    onChange={() => toggleBedSelection(row.block, row.bed)}
+                                  />
+                                  <span>Seleccionar</span>
+                                </label>
+                              </td>
+                            </tr>
+                            {isExpanded ? (
+                              <tr className="detail-history-row">
+                                <td colSpan="7">
+                                  <div className="history-panel">
+                                    <h3>Historial de la cama {row.bed} en el bloque {row.block}</h3>
+                                    <div className="history-table-wrapper">
+                                      <table className="history-table">
+                                        <thead>
+                                          <tr>
+                                            <th>Año</th>
+                                            <th>Semanas reportadas</th>
+                                            <th>Variedades</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {historyRows.map((historyRow) => (
+                                            <tr key={`${row.bed}-${historyRow.year}`}>
+                                              <td>{historyRow.year}</td>
+                                              <td>{historyRow.weeks.join(", ")}</td>
+                                              <td>{historyRow.varieties.join(", ") || "-"}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            ) : null}
+                          </Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
